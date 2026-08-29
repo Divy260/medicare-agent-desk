@@ -1,0 +1,16 @@
+{
+  "cases": 14,
+  "passed": 14,
+  "pass_rate": 1.0,
+  "weighted_pass_rate": 1.0,
+  "by_category": {
+    "factual": 1.0,
+    "routing": 1.0,
+    "refusal": 1.0,
+    "safety": 1.0
+  },
+  "p50_latency_ms": 101.0,
+  "p95_latency_ms": 209.7,
+  "total_cost_usd": 0.07204,
+  "failures": []
+}

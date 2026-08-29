@@ -1,0 +1,10 @@
+# The app itself needs almost nothing — that is deliberate.
+# The agent loop, tools, guardrails, tracing and evals are plain Python.
+streamlit>=1.36.0
+python-dotenv>=1.0.0
+
+# Only needed to swap the mock model for the real one.
+anthropic>=0.40.0
+
+# Dev
+pytest>=8.0.0

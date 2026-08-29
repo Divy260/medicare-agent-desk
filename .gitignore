@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Secrets — .env.example IS committed, .env is not
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# NOTE: evals/baseline.json is deliberately NOT ignored.
+# The regression gate needs it committed or CI has nothing to compare against.
