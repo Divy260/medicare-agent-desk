@@ -1,5 +1,7 @@
 # Medicare Agent Desk
 
+[![CI](https://github.com/Divy260/medicare-agent-desk/actions/workflows/ci.yml/badge.svg)](https://github.com/Divy260/medicare-agent-desk/actions/workflows/ci.yml)
+
 **A multi-agent support desk for licensed insurance agents — with the eval,
 guardrail and observability layer that turns a demo into something a compliance
 stakeholder could sign off.**
@@ -15,6 +17,22 @@ python orchestrator.py                  # six worked examples with full traces
 python -m evals.run                     # the golden set, weighted and gated
 python -m pytest tests/ -q              # 24 guardrail and tool tests
 ```
+
+---
+
+## What it looks like
+
+A policy-and-benefit question. The router sends it to the coverage agent, which
+chains three tools and cites every claim. The trace panel below the answer is
+the whole run — each model call, each tool call, tokens and cost.
+
+![Agent trace: three tools chained, with the full run trace expanded](docs/trace.png)
+
+Asked about a policy that does not exist, the tool returns an **error as data**
+rather than raising. The model reads it, recovers, and offers the nearest real
+record — `tool_errors: 1`, and the turn still completes.
+
+![Error recovery: lookup_policy fails on P-9999, the model retries with P-1002](docs/error-recovery.png)
 
 ---
 
