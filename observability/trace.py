@@ -86,22 +86,47 @@ class Trace:
 
     def timeline(self) -> str:
         """Human-readable trace, for the Streamlit sidebar and for debugging."""
-        lines = []
-        for e in self.events:
-            prefix = f"{e['t']:>6.2f}s  "
-            kind = e["kind"]
-            if kind == "model_call":
-                lines.append(f"{prefix}model  iter={e.get('iteration')} "
-                             f"stop={e.get('stop_reason')}")
-            elif kind == "tool_call":
-                mark = "ERR " if e.get("is_error") else "ok  "
-                lines.append(f"{prefix}tool   {mark}{e['name']}"
-                             f"({json.dumps(e.get('args', {}))})")
-            elif kind == "guardrail":
-                lines.append(f"{prefix}guard  [{e.get('layer')}] {e.get('rule')} "
-                             f"— {e.get('reason', '')}")
-            elif kind == "route":
-                lines.append(f"{prefix}route  -> {e.get('to')} ({e.get('why', '')})")
-            else:
-                lines.append(f"{prefix}{kind}  {json.dumps({k: v for k, v in e.items() if k not in ('t', 'kind')})}")
-        return "\n".join(lines)
+        return render_timeline(self.events)
+
+
+# ===========================================================================
+# Rendering, as a free function
+# ===========================================================================
+# This lives outside the class because the LangGraph engine in `graph/` does not
+# carry a Trace object through its state — graph state gets checkpointed to
+# durable storage, so everything in it must be plain serialisable data. It
+# accumulates the same event dicts in a list and renders them with this. One
+# trace format, two engines, so the Streamlit panel and the evals do not care
+# which one produced the run.
+
+def render_timeline(events: list[dict]) -> str:
+    lines = []
+    for e in events:
+        prefix = f"{e['t']:>6.2f}s  "
+        kind = e["kind"]
+        if kind == "model_call":
+            lines.append(f"{prefix}model  iter={e.get('iteration')} "
+                         f"stop={e.get('stop_reason')}")
+        elif kind == "tool_call":
+            mark = "ERR " if e.get("is_error") else "ok  "
+            lines.append(f"{prefix}tool   {mark}{e['name']}"
+                         f"({json.dumps(e.get('args', {}))})")
+        elif kind == "guardrail":
+            lines.append(f"{prefix}guard  [{e.get('layer')}] {e.get('rule')} "
+                         f"— {e.get('reason', '')}")
+        elif kind == "route":
+            lines.append(f"{prefix}route  -> {e.get('to')} ({e.get('why', '')})")
+        elif kind == "final_answer":
+            lines.append(f"{prefix}answer")
+        elif kind == "node":
+            lines.append(f"{prefix}node   {e.get('name')}")
+        elif kind == "handoff":
+            lines.append(f"{prefix}handoff {e.get('frm')} -> {e.get('to')} "
+                         f"({e.get('why', '')})")
+        elif kind == "interrupt":
+            lines.append(f"{prefix}PAUSE  {e.get('name')} — {e.get('reason', '')}")
+        elif kind == "resume":
+            lines.append(f"{prefix}RESUME {e.get('name')} — approved={e.get('approved')}")
+        else:
+            lines.append(f"{prefix}{kind}  {json.dumps({k: v for k, v in e.items() if k not in ('t', 'kind')})}")
+    return "\n".join(lines)

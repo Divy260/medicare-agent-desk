@@ -12,7 +12,7 @@ from __future__ import annotations
 # Policy admin system (stand-in)
 # ---------------------------------------------------------------------------
 # NOTE the `member_phone` field. It exists here because a real policy record has
-# it — and it is stripped in tools/policy.py before the model ever sees the
+# it — and it is stripped in tools/registry.py before the model ever sees the
 # record. Data minimisation is a property of the tool layer, not the prompt.
 
 POLICIES: dict[str, dict] = {

@@ -18,6 +18,7 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+.claude/
 
 # NOTE: evals/baseline.json is deliberately NOT ignored.
 # The regression gate needs it committed or CI has nothing to compare against.

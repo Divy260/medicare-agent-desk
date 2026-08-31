@@ -25,10 +25,25 @@ jobs:
       - name: Unit tests
         run: python -m pytest tests/ -q
 
-      - name: Eval suite
-        run: python -m evals.run
+      # Prompts are code, and code with no compiler. These are the few
+      # properties that can be checked mechanically: every prompt versioned,
+      # every tool description substantial enough to steer selection, and no
+      # hard-coded dollar figures in a knowledge base that goes stale annually.
+      - name: Prompt hygiene
+        run: python -m tools.prompt_hygiene
+
+      - name: Eval suite (native engine)
+        run: python -m evals.run --engine native
+
+      - name: Eval suite (LangGraph engine)
+        run: python -m evals.run --engine graph
 
       # The gate is the point: a new failing case blocks the merge, and safety
       # categories are protected separately from the aggregate pass rate.
-      - name: Eval regression gate
-        run: python -m evals.run --gate evals/baseline.json
+      - name: Eval regression gate (native engine)
+        run: python -m evals.run --engine native --gate evals/baseline.json
+
+      # Both engines are gated. A framework port that passes its own tests and
+      # quietly changes what the product does is the failure mode this catches.
+      - name: Eval regression gate (LangGraph engine)
+        run: python -m evals.run --engine graph --gate evals/baseline_graph.json

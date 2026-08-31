@@ -6,5 +6,14 @@ python-dotenv>=1.0.0
 # Only needed to swap the mock model for the real one.
 anthropic>=0.40.0
 
+# --- The LangGraph engine (graph/) ---------------------------------------
+# A second orchestration engine over the SAME tools, guardrails, prompts and
+# eval suite. orchestrator.py does not import these — the framework is an
+# option here, not a load-bearing dependency, and evals/run.py can score both
+# engines against one golden set. See docs/agent-interaction.md.
+langgraph>=1.0.0
+langchain-core>=1.0.0
+langchain-anthropic>=1.0.0
+
 # Dev
 pytest>=8.0.0

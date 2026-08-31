@@ -14,8 +14,10 @@ demonstrated without spending anything.
 pip install -r requirements.txt
 streamlit run app.py                    # the UI
 python orchestrator.py                  # six worked examples with full traces
-python -m evals.run                     # the golden set, weighted and gated
-python -m pytest tests/ -q              # 24 guardrail and tool tests
+python -m graph.run                     # the same desk as a LangGraph state machine
+python -m evals.run --engine native     # the golden set, weighted and gated
+python -m evals.run --engine graph      # ...scored against the LangGraph engine too
+python -m pytest tests/ -q              # 66 tests
 ```
 
 ---
@@ -95,9 +97,14 @@ is a regulatory finding — so it is enforced in code, not requested in a prompt
 Every layer is traced: which agent, which tools with which arguments, which
 guardrails fired, tokens, latency and cost per turn.
 
+That pipeline exists twice — hand-rolled in `orchestrator.py`, and as a
+LangGraph `StateGraph` in `graph/` that adds specialist-to-specialist handoff
+and a human approval interrupt. Same tools, same guardrails, same golden set.
+See [section 6](#6-two-orchestration-engines-one-golden-set--graph).
+
 ---
 
-## The five things worth looking at
+## The six things worth looking at
 
 ### 1. The agent loop — `agents/base.py`
 
@@ -222,6 +229,62 @@ cannot regress. That comment is still in `orchestrator.py`.
 
 ---
 
+### 6. Two orchestration engines, one golden set — `graph/`
+
+The desk runs on either a hand-rolled orchestrator or a LangGraph state machine,
+over the **same** tools, guardrails, prompts and evals.
+
+```bash
+python -m evals.run --engine native     # orchestrator.py
+python -m evals.run --engine graph      # graph/build.py
+```
+
+Keeping both is what makes any claim about the framework specific. If LangGraph
+earns a dependency, the difference has to be nameable — and the eval suite has
+to show behaviour did not change while you got it.
+
+**What the graph engine adds that a router cannot do:**
+
+| Mechanism | LangGraph primitive | The failure it prevents |
+|---|---|---|
+| **Handoff** | `Command(goto=...)` | A two-part question — *"does P-1003 cover foreign travel, and when is Medigap OE?"* — gets half an answer, because a router must pick one destination |
+| **Shared state** | `Annotated[list, operator.add]` | The second agent's return value **clobbers** the first agent's findings. Default state behaviour is last-write-wins; the symptom is a fluent answer missing half the question |
+| **Human approval** | `interrupt()` + checkpointer | The escalation tool fires without a human. The graph parks, and `resume(thread_id, True)` continues it from a *different request* |
+| **Bounded interaction** | `MAX_HANDOFFS` | Two agents that can each hand to the other ping-pong forever. Same argument as the iteration cap, one level up |
+
+The division of labour is the design decision to defend:
+
+```
+LangGraph   INTER-agent control flow — who runs, who hands to whom, where a human interrupts
+agents/     INTRA-agent tool calling — the while-loop, token budget, wall-clock cap, retry policy
+base.py
+```
+
+`create_react_agent` would replace the second column and is deliberately not
+used: it has no token budget and no wall-clock cap, and adopting a prebuilt
+agent means adopting its budget semantics instead of yours. Use it to start;
+replace it when your failure modes stop matching its defaults.
+
+**The tools are wrapped, not handed over** — `graph/lc_tools.py`:
+
+```python
+StructuredTool.from_function(lookup_policy)   # WRONG — the guardrail is gone
+```
+
+LangChain calls the raw function the moment the model emits a tool call. The
+security boundary is wherever execution happens, so `guarded()` closes over the
+allow-list, argument validation, rate limit and approval check. The JSON schemas
+are reused from `tools/registry.py` rather than redeclared — one definition, two
+frameworks, no drift.
+
+**And the port is proved, not asserted.** `tests/test_graph.py` runs the whole
+golden set through both engines and asserts they agree on routing and on which
+guardrails fired — not on wording, which legitimately differs. CI gates both.
+
+Full write-up: [docs/agent-interaction.md](docs/agent-interaction.md).
+
+---
+
 ## Worked runs
 
 **A healthy three-tool chain** — no single tool answers the question:
@@ -273,21 +336,33 @@ the escalation tool still will not fire without a human approving it.
 ```
 medicare-agent-desk/
 ├── app.py                    Streamlit UI with a live trace panel
-├── orchestrator.py           input guardrail → router → agent
+├── orchestrator.py           NATIVE ENGINE: input guardrail → router → agent
 ├── agents/
 │   ├── base.py               THE AGENT LOOP — budgets, retries, guardrails, tracing
 │   ├── llm.py                Claude client + deterministic mock backend
 │   └── roster.py             coverage · enrollment · escalation (prompts + tool subsets)
-├── tools/registry.py         JSON schemas, implementations, per-tool policy
+├── graph/                    LANGGRAPH ENGINE over the same tools and guardrails
+│   ├── state.py              shared blackboard + the reducers that stop clobbering
+│   ├── lc_tools.py           LangChain StructuredTools, guardrail INSIDE the wrapper
+│   ├── nodes.py              guard · supervisor · specialists · handoff · interrupt · fan-in
+│   ├── build.py              the StateGraph, conditional edges, checkpointer
+│   └── run.py                handle() / resume(), signature-compatible with the native engine
+├── tools/
+│   ├── registry.py           JSON schemas, implementations, per-tool policy
+│   └── prompt_hygiene.py     CI check: prompt versions, description length, no stale $ figures
 ├── guardrails/rules.py       input · tool · output layers
-├── observability/trace.py    per-run timeline, tokens, cost, tools called
+├── observability/trace.py    per-run timeline, tokens, cost, tools called — shared by both engines
 ├── evals/
 │   ├── golden_set.py         14 weighted cases across 4 categories
-│   ├── run.py                5 scorers + the regression gate
-│   └── baseline.json         committed, so CI has something to compare against
-├── tests/test_guardrails.py  24 tests, including false positives
+│   ├── run.py                5 scorers + the regression gate, --engine native|graph
+│   ├── baseline.json         native-engine baseline, committed for CI
+│   └── baseline_graph.json   graph-engine baseline, gated separately
+├── tests/
+│   ├── test_guardrails.py    24 tests, including false positives
+│   └── test_graph.py         42 tests: topology, handoff, interrupt, and engine parity
 ├── data/knowledge.py         stand-in policy admin + benefits KB + enrollment calendar
-└── .github/workflows/ci.yml  tests → prompt hygiene → EVAL GATE
+├── docs/agent-interaction.md how agents interact, and what the frameworks actually do
+└── .github/workflows/ci.yml  tests → prompt hygiene → EVAL GATE (both engines)
 ```
 
 ---
@@ -337,6 +412,7 @@ branches on it.
 | `data/knowledge.py` | Azure AI Search index with hybrid retrieval and security trimming |
 | `agents/base.py` | Same loop, or Azure AI Foundry Agent Service |
 | `observability/trace.py` | OpenTelemetry → Application Insights |
+| `graph/build.py` | The same graph, with `PostgresSaver` instead of `MemorySaver` so an approval interrupt survives a restart and a load balancer |
 | `evals/` | The same gate, plus Foundry's built-in groundedness and safety evaluators |
 | `app.py` | Copilot Studio agent in Teams, calling this service through a custom connector |
 
