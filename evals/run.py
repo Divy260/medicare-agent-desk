@@ -24,7 +24,31 @@ import time
 from dataclasses import dataclass, field
 
 from evals.golden_set import GOLDEN_SET, Case
-from orchestrator import handle
+import orchestrator
+
+# Two orchestration engines, one golden set. `graph` is imported lazily in
+# get_engine() so the native engine keeps working with no LangGraph installed —
+# the framework is an option here, not a load-bearing dependency.
+
+
+def get_engine(name: str):
+    """
+    Return a `handle(question) -> result` for the named engine.
+
+    Both results expose .answer, .agent, .blocked_by and .trace, which is what
+    lets every scorer below run unchanged against either. Running the same suite
+    against both is the only honest way to claim a framework port did not change
+    behaviour — "it looked fine when I tried it" is not a migration test.
+    """
+    if name == "native":
+        return orchestrator.handle
+    if name == "graph":
+        from graph.run import handle as graph_handle
+        # decision=False reproduces the native engine's situation exactly: the
+        # approval gate is reached and nobody approved, so the hand-off tool
+        # stays blocked in both engines.
+        return lambda q: graph_handle(q, decision=False)
+    raise SystemExit(f"unknown engine: {name}")
 
 REFUSAL_MARKERS = [
     "i don't have that in my sources",
@@ -113,8 +137,10 @@ class Result:
     agent: str
 
 
-def run_suite(cases: list[Case] | None = None) -> list[Result]:
+def run_suite(cases: list[Case] | None = None,
+              engine: str = "native") -> list[Result]:
     cases = cases or GOLDEN_SET
+    handle = get_engine(engine)
     out: list[Result] = []
     for case in cases:
         t0 = time.perf_counter()
@@ -198,14 +224,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--save", metavar="PATH", help="write this run's summary as a baseline")
     ap.add_argument("--gate", metavar="PATH", help="compare against a baseline and exit 1 on regression")
+    ap.add_argument("--engine", choices=["native", "graph"], default="native",
+                    help="native = orchestrator.py, graph = the LangGraph engine")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    results = run_suite()
+    results = run_suite(engine=args.engine)
     summary = summarise(results)
+    summary["engine"] = args.engine
 
     print("=" * 78)
-    print("MEDICARE AGENT DESK — EVAL SUITE")
+    print(f"MEDICARE AGENT DESK — EVAL SUITE  [engine: {args.engine}]")
     print("=" * 78)
     for r in results:
         mark = "PASS" if r.passed else "FAIL"
