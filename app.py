@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 
 import streamlit as st
 
-from orchestrator import handle
+import orchestrator
 
 st.set_page_config(page_title="Medicare Agent Desk", page_icon="🗂️", layout="wide")
 
@@ -29,6 +30,16 @@ AGENT_COLOURS = {
     "escalation": "#b5651d",
     "blocked": "#a03030",
 }
+
+ENGINES = {
+    "native — orchestrator.py": "native",
+    "graph — LangGraph StateGraph": "graph",
+}
+
+# Only the graph engine can do these two, which is the whole reason it exists.
+GRAPH_ONLY_EXAMPLES = [
+    "Does P-1003 cover foreign travel emergency, and when is Medigap open enrollment?",
+]
 
 EXAMPLES = [
     "For policy P-1001, is the Part B deductible covered, and what does the member pay in premiums over a year?",
@@ -61,6 +72,26 @@ with st.sidebar:
         st.success(f"Live model: `{os.getenv('CLAUDE_MODEL', 'claude-sonnet-5')}`", icon="✅")
 
     st.divider()
+    st.subheader("Engine")
+    engine_label = st.radio(
+        "Orchestration engine", list(ENGINES), label_visibility="collapsed",
+        help="Both engines share the same tools, guardrails, prompts and evals. "
+             "Only the orchestration differs — and evals/run.py scores both.",
+    )
+    ENGINE = ENGINES[engine_label]
+    if ENGINE == "graph":
+        st.caption(
+            "Adds **handoff** between specialists (`Command(goto=...)`), a shared "
+            "blackboard with reducers, and a **human approval interrupt** that "
+            "parks the run until you approve it below."
+        )
+    else:
+        st.caption(
+            "One agent per turn. Fast and simple — but a question spanning two "
+            "domains gets half an answer, because a router picks one destination."
+        )
+
+    st.divider()
     st.subheader("Architecture")
     st.markdown(
         """
@@ -88,7 +119,8 @@ OUTPUT GUARDRAIL ── PII · CMS claims · disclaimers
 
     st.divider()
     st.subheader("Try one")
-    for i, ex in enumerate(EXAMPLES):
+    shown = (GRAPH_ONLY_EXAMPLES + EXAMPLES) if ENGINE == "graph" else EXAMPLES
+    for i, ex in enumerate(shown):
         label = ex if len(ex) < 52 else ex[:49] + "…"
         if st.button(label, key=f"ex{i}", use_container_width=True):
             st.session_state["pending"] = ex
@@ -111,25 +143,44 @@ if "history" not in st.session_state:
     st.session_state["history"] = []
 
 
+def _chip(text: str, colour: str) -> str:
+    return (f"<span style='background:{colour};color:#fff;padding:2px 9px;"
+            f"border-radius:10px;font-size:0.72rem;font-weight:600'>"
+            f"{text}</span>")
+
+
+def safe_markdown(text: str) -> str:
+    """
+    Escape `$` before Streamlit renders the answer.
+
+    Streamlit treats paired dollar signs as LaTeX, so an answer containing
+    "80% after a $250 deductible, up to a $50,000 maximum" renders as maths and
+    the amounts DISAPPEAR from the page. On a desk whose whole job is quoting
+    benefit figures accurately, silently dropping a dollar amount is the worst
+    class of display bug — the answer still reads fluently while being wrong.
+    """
+    return text.replace("$", r"\$")
+
+
 def render_turn(turn: dict) -> None:
     with st.chat_message("user"):
         st.write(turn["question"])
 
     with st.chat_message("assistant"):
-        colour = AGENT_COLOURS.get(turn["agent"], "#5a5a5a")
-        badges = (
-            f"<span style='background:{colour};color:#fff;padding:2px 9px;"
-            f"border-radius:10px;font-size:0.72rem;font-weight:600'>"
-            f"{turn['agent'].upper()}</span>"
+        # On the graph engine a turn can visit more than one specialist, and the
+        # path is the interesting part — show the handoff rather than hiding it
+        # behind whichever agent happened to speak last.
+        path = turn["summary"].get("visited") or [turn["agent"]]
+        badges = " → ".join(
+            _chip(name.upper(), AGENT_COLOURS.get(name, "#5a5a5a")) for name in path
         )
+        if len(path) > 1:
+            badges += " " + _chip("HANDOFF", "#5b3d8f")
         if turn["blocked_by"]:
-            badges += (
-                f" <span style='background:#a03030;color:#fff;padding:2px 9px;"
-                f"border-radius:10px;font-size:0.72rem;font-weight:600'>"
-                f"GUARDRAIL: {turn['blocked_by'].upper()}</span>"
-            )
+            badges += " " + _chip(f"GUARDRAIL: {turn['blocked_by'].upper()}", "#a03030")
+
         st.markdown(badges, unsafe_allow_html=True)
-        st.write(turn["answer"])
+        st.write(safe_markdown(turn["answer"]))
 
         s = turn["summary"]
         cols = st.columns(5)
@@ -144,8 +195,56 @@ def render_turn(turn: dict) -> None:
             st.json(s)
 
 
+def record(question: str, result) -> None:
+    st.session_state["history"].append({
+        "question": question,
+        "answer": result.answer,
+        "agent": result.agent,
+        "blocked_by": result.blocked_by,
+        "summary": result.trace.summary(),
+        "timeline": result.trace.timeline(),
+    })
+
+
 for turn in st.session_state["history"]:
     render_turn(turn)
+
+
+# ---------------------------------------------------------------------------
+# The approval gate — only reachable on the graph engine
+# ---------------------------------------------------------------------------
+pending = st.session_state.get("awaiting_approval")
+if pending:
+    from graph.run import resume as graph_resume
+
+    with st.chat_message("user"):
+        st.write(pending["question"])
+
+    with st.container(border=True):
+        st.markdown(
+            "<span style='background:#7a5c00;color:#fff;padding:2px 9px;"
+            "border-radius:10px;font-size:0.72rem;font-weight:600'>"
+            "GRAPH PAUSED — AWAITING HUMAN</span>",
+            unsafe_allow_html=True,
+        )
+        st.write(
+            f"`{pending['payload']['tool']}` has downstream effects and will not "
+            f"run until a person approves it. The graph is checkpointed at this "
+            f"node — in production this is a separate request, minutes or hours "
+            f"later, carrying only the thread id."
+        )
+        st.json(pending["payload"])
+
+        left, right, _ = st.columns([1, 1, 4])
+        approve = left.button("Approve", type="primary", use_container_width=True)
+        decline = right.button("Decline", use_container_width=True)
+
+        if approve or decline:
+            with st.spinner("Resuming the graph…"):
+                result = graph_resume(pending["thread_id"], decision=bool(approve))
+            st.session_state.pop("awaiting_approval")
+            record(pending["question"], result)
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -156,17 +255,28 @@ if "pending" in st.session_state:
     question = st.session_state.pop("pending")
 
 if question:
-    with st.spinner("Routing and running…"):
-        result = handle(question)
+    thread_id = uuid.uuid4().hex[:12]
 
-    st.session_state["history"].append({
-        "question": question,
-        "answer": result.answer,
-        "agent": result.agent,
-        "blocked_by": result.blocked_by,
-        "summary": result.trace.summary(),
-        "timeline": result.trace.timeline(),
-    })
+    with st.spinner("Routing and running…"):
+        if ENGINE == "graph":
+            from graph.run import handle as graph_handle
+
+            result = graph_handle(question, thread_id=thread_id)
+        else:
+            result = orchestrator.handle(question)
+
+    # The graph can park itself waiting for a human. Nothing has run at that
+    # point: the hand-off tool has NOT fired, and it will not until someone
+    # approves it. That is the difference between an approval gate and a
+    # confirmation dialog shown after the fact.
+    if getattr(result, "interrupted", None):
+        st.session_state["awaiting_approval"] = {
+            "thread_id": thread_id,
+            "question": question,
+            "payload": result.interrupted,
+        }
+    else:
+        record(question, result)
     st.rerun()
 
 
